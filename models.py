@@ -1,34 +1,86 @@
-from __future__ import unicode_literals
 from django.db import models
-from hashids import Hashids
 from django.conf import settings
 
+from hashids import Hashids
+
+
+class BaseModelQuerySet(models.query.QuerySet):
+    def get(self, *args, **kwargs):
+        hash = kwargs.get('hash')
+
+        if hash:
+            del kwargs['hash']
+            kwargs['id'] = self.id_from_hash(hash)
+
+        return super().get(**kwargs)
+
+    def all(self):
+        return super().exclude(is_deleted=True)
+
+    def filter(self, *args, **kwargs):
+        if kwargs.get('is_deleted') is None and kwargs.get('is_deleted__exact') is None:
+            kwargs.pop('is_deleted', None)
+            kwargs['is_deleted__exact'] = False
+
+        return super().filter(**kwargs)
+
+    def exclude(self, *args, **kwargs):
+        if kwargs.get('is_deleted') is None and kwargs.get('is_deleted__exact') is None:
+            kwargs.pop('is_deleted', None)
+            kwargs['is_deleted__exact'] = True
+
+        return super().exclude(**kwargs)
+
+    @classmethod
+    def id_from_hash(cls, hsh):
+        hashids = Hashids(salt=settings.SECRET_KEY)
+        ids = hashids.decrypt(hsh)
+
+        if len(ids) > 0:
+            return ids[0]
+
+        return None
+
+
+class BaseModelManager(models.Manager.from_queryset(BaseModelQuerySet)):
+    pass
+
+
+class BaseAdminModelManager(models.Manager):
+    """admin methods needs their own model manager to bypass is_deleted functionality"""
+    pass
+
+
 class BaseModel(models.Model):
-	def __init__(self, *args, **kwargs):
-		super(BaseModel, self).__init__(*args, **kwargs)
+    class Meta:
+        abstract = True
 
-	class Meta:
-		abstract = True
+    def __init__(self, *args, **kwargs):
+        super(BaseModel, self).__init__(*args, **kwargs)
 
-	created_at = models.DateTimeField(auto_now_add=True)
-	modified_at = models.DateTimeField(auto_now=True)
-	is_deleted = models.BooleanField(default=False)
+    objects = BaseModelManager()
+    admin_objects = BaseAdminModelManager()
 
-	@property
-	def hash(self):
-		if not self.id:
-			return None
+    fake_delete = True
 
-		hashids = Hashids(salt=settings.SECRET_KEY)
-		hash = hashids.encode(self.id)
+    created_at = models.DateTimeField(auto_now_add=True)
+    modified_at = models.DateTimeField(auto_now=True)
+    is_deleted = models.BooleanField(default=False)
 
-		return hash
+    def delete(self, *args, **kwargs):
+        if self.fake_delete:
+            self.is_deleted = True
+            self.save()
+            return 1
 
-	def id_from_hash(self, hash):
-		hashids = Hashids(salt=settings.SECRET_KEY)
-		ids = hashids.decrypt(hash)
+        return super().delete(*args, **kwargs)
 
-		if len(ids) > 0:
-			return ids[0]
+    @property
+    def hash(self):
+        if not self.id:
+            return None
 
-		return None
+        hashids = Hashids(salt=settings.SECRET_KEY)
+        h = hashids.encode(self.id)
+
+        return h

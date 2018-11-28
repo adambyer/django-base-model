@@ -22,29 +22,21 @@ def hash_decorator(func):
 class BaseModelQuerySet(models.query.QuerySet):
     @hash_decorator
     def get(self, *args, **kwargs):
-        return super().get(**kwargs)
-
-    def all(self):
-        # exclude is_deleted records
-        return super().exclude(is_deleted=True)
+        return super().get(*args, **kwargs)
 
     @hash_decorator
     def filter(self, *args, **kwargs):
-        # allow filtering by is_deleted if specified, otherwise exclude them
-        if kwargs.get('is_deleted') is None and kwargs.get('is_deleted__exact') is None:
-            kwargs.pop('is_deleted', None)
-            kwargs['is_deleted__exact'] = False
-
-        return super().filter(**kwargs)
+        """
+        NOTE: cannot filter is_deleted because it's already False in the base query (get_queryset)
+        """
+        return super().filter(*args, **kwargs)
 
     @hash_decorator
     def exclude(self, *args, **kwargs):
-        # allow excluding by is_deleted if specified, otherwise exclude them
-        if kwargs.get('is_deleted') is None and kwargs.get('is_deleted__exact') is None:
-            kwargs.pop('is_deleted', None)
-            kwargs['is_deleted__exact'] = False
-
-        return super().exclude(**kwargs)
+        """
+        NOTE: cannot exclude is_deleted because it's already False in the base query (get_queryset)
+        """
+        return super().exclude(*args, **kwargs)
 
     @classmethod
     def id_from_hash(cls, hsh):
@@ -58,7 +50,8 @@ class BaseModelQuerySet(models.query.QuerySet):
 
 
 class BaseModelManager(models.Manager.from_queryset(BaseModelQuerySet)):
-    pass
+    def get_queryset(self):
+        return super().get_queryset().exclude(is_deleted=True)
 
 
 class BaseAdminModelManager(models.Manager):
@@ -74,7 +67,7 @@ class BaseModel(models.Model):
         fake_delete = False
 
     def __init__(self, *args, **kwargs):
-        super(BaseModel, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
     objects = BaseModelManager()
     admin_objects = BaseAdminModelManager()
@@ -84,36 +77,37 @@ class BaseModel(models.Model):
     is_deleted = models.BooleanField(default=False)
 
     def delete(self, *args, **kwargs):
-        if self.Options.fake_delete:
+        if self.Options.fake_delete and not kwargs.get('hard', False):
             self.is_deleted = True
-            self.save()
+            self.save(update_fields=['is_deleted'])
             return 1
 
+        kwargs.pop('hard', None)
         return super().delete(*args, **kwargs)
 
-    def hard_delete(self, *args, **kwargs):
-        return super().delete(*args, **kwargs)
+    @staticmethod
+    def get_hash_from_id(id):
+        hashids = Hashids(salt=settings.SECRET_KEY)
+        h = hashids.encode(id)
+
+        return h
 
     @property
     def hash(self):
         if not self.pk:
             return None
 
-        hashids = Hashids(salt=settings.SECRET_KEY)
-        h = hashids.encode(self.pk)
-
-        return h
+        return self.get_hash_from_id(self.pk)
 
 
 class BaseModelAdmin(ModelAdmin):
-    readonly_fields = ('created_at', 'modified_at')
-
-    list_display = ('created_at', 'is_deleted')
+    list_display = ('pk', 'hash', 'created_at', 'is_deleted')
 
     fieldsets = (
-        ('Base', {'fields': ('created_at', 'modified_at', 'is_deleted')}),
+        ('Base', {'fields': ('pk', 'hash', 'created_at', 'modified_at', 'is_deleted')}),
     )
 
+    readonly_fields = ('pk', 'hash', 'created_at', 'modified_at')
     list_filter = ('is_deleted',)
 
     def get_queryset(self, request):
